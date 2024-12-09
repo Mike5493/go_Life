@@ -2,114 +2,94 @@ package main
 
 import (
 	"log"
-	"math/rand/v2"
+	"math/rand"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
-// World represents game state
+const (
+	screenWidth      = 320
+	screenHeight     = 240
+	initialLiveCells = screenWidth * screenHeight / 10
+	cellSize         = 4 // RGBA bytes per cell
+)
+
 type World struct {
 	area   []bool
 	width  int
 	height int
+	buffer []bool // Reused for state updates
 }
 
+// NewWorld creates a new world and initializes it.
 func NewWorld(width, height int, maxInitLiveCells int) *World {
 	w := &World{
 		area:   make([]bool, width*height),
 		width:  width,
 		height: height,
+		buffer: make([]bool, width*height),
 	}
 	w.init(maxInitLiveCells)
 	return w
 }
 
-// Inits world with random state
+// init populates the world with random live cells.
 func (w *World) init(maxLiveCells int) {
+	rand.Seed(time.Now().UnixNano()) // Ensure randomness per run
 	for i := 0; i < maxLiveCells; i++ {
-		x := rand.IntN(w.width)
-		y := rand.IntN(w.height)
+		x := rand.Intn(w.width)
+		y := rand.Intn(w.height)
 		w.area[y*w.width+x] = true
 	}
 }
 
-// Update game state by one tick.
-func (w *World) Update() {
-	width := w.width
-	height := w.height
-	next := make([]bool, width*height)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			pop := neighbourCount(w.area, width, height, x, y)
-			switch {
-			case pop < 2:
-				// Rule 1. Any live cell with fewer than two live neighbors
-				// dies, as if caused by under-population.
-				next[y*width+x] = false
-
-			case (pop == 2 || pop == 3) && w.area[y*width+x]:
-				// Rule 2. Any live cell with two or three live neighbors
-				// lives on to the next generation.
-				next[y*width+x] = true
-
-			case pop > 3:
-				// Rule 3. Any live cells with more than three live neighbors
-				// dies, as if by over-population.
-				next[y*width+x] = false
-
-			case pop == 3:
-				// Rule 4. Any dead cell with exactly three live neighbors
-				// becomes a live cell, as if by reproduction.
-				next[y*width+x] = true
-
-			}
-		}
-	}
-	w.area = next
-}
-
-// Draw paints current game state.
-func (w *World) Draw(pix []byte) {
-	for i, v := range w.area {
-		if v {
-			pix[4*i] = 0xff
-			pix[4*i+1] = 0xff
-			pix[4*i+2] = 0xff
-			pix[4*i+3] = 0xff
-		} else {
-			pix[4*i] = 0
-			pix[4*i+1] = 0
-			pix[4*i+2] = 0
-			pix[4*i+3] = 0
-		}
-	}
-}
-
-// NeighbourCount calculates the Moore neighborhood of (x, y).
-func neighbourCount(a []bool, width, height, x, y int) int {
-	c := 0
+// neighbourCount calculates the number of live neighbors for cell (x, y).
+func (w *World) neighbourCount(x, y int) int {
+	count := 0
 	for j := -1; j <= 1; j++ {
 		for i := -1; i <= 1; i++ {
 			if i == 0 && j == 0 {
 				continue
 			}
-			x2 := x + i
-			y2 := y + j
-			if x2 < 0 || y2 < 0 || width <= x2 || height <= y2 {
-				continue
-			}
-			if a[y2*width+x2] {
-				c++
+			nx, ny := x+i, y+j
+			if nx >= 0 && ny >= 0 && nx < w.width && ny < w.height {
+				if w.area[ny*w.width+nx] {
+					count++
+				}
 			}
 		}
 	}
-	return c
+	return count
 }
 
-const (
-	screenWidth  = 320
-	screenHeight = 240
-)
+// Update progresses the world's state by one generation.
+func (w *World) Update() {
+	for y := 0; y < w.height; y++ {
+		for x := 0; x < w.width; x++ {
+			idx := y*w.width + x
+			neighbors := w.neighbourCount(x, y)
+			w.buffer[idx] = false
+			if neighbors == 3 || (neighbors == 2 && w.area[idx]) {
+				w.buffer[idx] = true
+			}
+		}
+	}
+	// Swap buffers
+	w.area, w.buffer = w.buffer, w.area
+}
+
+// Draw converts the world's state to RGBA pixels.
+func (w *World) Draw(pix []byte) {
+	for i, live := range w.area {
+		offset := i * cellSize
+		if live {
+			pix[offset], pix[offset+1], pix[offset+2], pix[offset+3] = 0xff, 0xff, 0xff, 0xff
+		} else {
+			pix[offset], pix[offset+1], pix[offset+2], pix[offset+3] = 0, 0, 0, 0
+		}
+	}
+}
 
 type Game struct {
 	world  *World
@@ -123,7 +103,7 @@ func (g *Game) Update() error {
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	if g.pixels == nil {
-		g.pixels = make([]byte, screenWidth*screenHeight*4)
+		g.pixels = make([]byte, screenWidth*screenHeight*cellSize)
 	}
 	g.world.Draw(g.pixels)
 	screen.WritePixels(g.pixels)
@@ -134,13 +114,13 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 }
 
 func main() {
-	g := &Game{
-		world: NewWorld(screenWidth, screenHeight, int((screenWidth*screenHeight)/10)),
+	game := &Game{
+		world: NewWorld(screenWidth, screenHeight, initialLiveCells),
 	}
 
 	ebiten.SetWindowSize(screenWidth*2, screenHeight*2)
 	ebiten.SetWindowTitle("~Game of Life~")
-	if err := ebiten.RunGame(g); err != nil {
+	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
 }
